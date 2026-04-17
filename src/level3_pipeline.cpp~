@@ -43,7 +43,7 @@ int main(int argc, char* argv[]) {
     bool use_quiet = true;
     int cmd_threads = -1;
     std::string cmd_data_dir;
-    int port = 13481;
+    int port = 13480;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -69,12 +69,12 @@ int main(int argc, char* argv[]) {
             return 0;
         }
     }
-
+    
     std::cout << "🚀 Level III Data Pipeline Service Starting" << std::endl;
-
+    
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
-
+    
     try {
         // Initialize AWS SDK
         AWSInitializer aws_init;
@@ -94,10 +94,10 @@ int main(int argc, char* argv[]) {
         auto storage_manager = std::make_shared<FrameStorageManager>(level3_data_path);
         std::cout << "✅ Storage manager created successfully" << std::endl;
         std::cout.flush();
-
+        
         FrameFetcherConfig fetcher_config;
         if (cmd_threads > 0) fetcher_config.thread_pool_size = cmd_threads;
-
+        
         const char* env_stations = std::getenv("NEXRAD_MONITORED_STATIONS");
         if (env_stations) {
             std::string stations_str(env_stations);
@@ -117,7 +117,7 @@ int main(int argc, char* argv[]) {
         auto frame_fetcher = std::make_shared<BackgroundFrameFetcher>(storage_manager, fetcher_config);
         std::cout << "✅ BackgroundFrameFetcher created with S3 client ready" << std::endl;
         std::cout.flush();
-
+        
         std::shared_ptr<AdminServer> admin_server;
         if (use_http) {
             std::cout << "🌐 Starting Admin Server on port " << port << "..." << std::endl;
@@ -143,19 +143,19 @@ int main(int argc, char* argv[]) {
             terminal_ui->render();
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
         }
-
+        
         std::cout << "\n🛑 Shutting down Level III pipeline..." << std::endl;
-
+        
         if (admin_server) {
             admin_server->shutdown_all();
         }
-
+        
         std::cout << "✅ Level III Data Pipeline Service stopped cleanly" << std::endl;
-
+        
     } catch (const std::exception& e) {
         std::cerr << "❌ Fatal error: " << e.what() << std::endl;
         return 1;
     }
-
+    
     return 0;
 }
