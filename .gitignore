@@ -1,0 +1,19 @@
+# Compilation artifacts
+build/
+bin/
+*.o
+*.a
+*.so
+
+# Data storage
+data/
+
+# IDEs and OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Logs
+*.log
+.test_data/
