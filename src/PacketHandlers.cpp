@@ -29,32 +29,54 @@ bool RadialPacketHandler::Parse(std::istream& is, const PacketContext& ctx, Rada
         has_data = true;
     }
 
+    struct RawRadial {
+        uint16_t bytes_or_rle;
+        uint16_t start_angle;
+        uint16_t delta_angle;
+        std::vector<uint8_t> data;
+    };
+    std::vector<RawRadial> raw_radials(frame.ray_count);
+
     for (int r = 0; r < frame.ray_count; ++r) {
-        uint16_t bytes_or_rle, start_angle, delta_angle;
-        is.read(reinterpret_cast<char*>(&bytes_or_rle), 2);
-        is.read(reinterpret_cast<char*>(&start_angle), 2);
-        is.read(reinterpret_cast<char*>(&delta_angle), 2);
-        bytes_or_rle = ntohs(bytes_or_rle);
+        is.read(reinterpret_cast<char*>(&raw_radials[r].bytes_or_rle), 2);
+        is.read(reinterpret_cast<char*>(&raw_radials[r].start_angle), 2);
+        is.read(reinterpret_cast<char*>(&raw_radials[r].delta_angle), 2);
+        raw_radials[r].bytes_or_rle = ntohs(raw_radials[r].bytes_or_rle);
 
         if (has_data) {
-            size_t to_read = std::min((size_t)frame.gate_count, (size_t)bytes_or_rle);
-            is.read(reinterpret_cast<char*>(frame.data.data() + r * frame.gate_count), to_read);
+            size_t to_read = std::min((size_t)frame.gate_count, (size_t)raw_radials[r].bytes_or_rle);
+            raw_radials[r].data.resize(to_read);
+            is.read(reinterpret_cast<char*>(raw_radials[r].data.data()), to_read);
+
+            if (raw_radials[r].bytes_or_rle > to_read) {
+                is.seekg(raw_radials[r].bytes_or_rle - to_read, std::ios::cur);
+            }
+        } else {
+            is.seekg(raw_radials[r].bytes_or_rle, std::ios::cur);
+        }
+    }
+
+    if (has_data) {
+        std::vector<size_t> indices(frame.ray_count);
+        for (size_t i = 0; i < indices.size(); ++i) indices[i] = i;
+        std::sort(indices.begin(), indices.end(), [&raw_radials](size_t a, size_t b) {
+            return ntohs(raw_radials[a].start_angle) < ntohs(raw_radials[b].start_angle);
+        });
+
+        for (size_t i = 0; i < indices.size(); ++i) {
+            const auto& src = raw_radials[indices[i]];
+            std::copy(src.data.begin(), src.data.end(), frame.data.begin() + i * frame.gate_count);
 
             if (ctx.product_code == 135) {
                 uint8_t mask = static_cast<uint8_t>(ctx.pdb.data_level_thresholds[0]);
                 if (mask == 0) mask = 0x7F;
-                for (size_t i = 0; i < to_read; ++i) {
-                    frame.data[r * frame.gate_count + i] &= mask;
+                for (size_t j = 0; j < src.data.size(); ++j) {
+                    frame.data[i * frame.gate_count + j] &= mask;
                 }
             }
-
-            if (bytes_or_rle > to_read) {
-                is.seekg(bytes_or_rle - to_read, std::ios::cur);
-            }
-        } else {
-            is.seekg(bytes_or_rle, std::ios::cur);
         }
     }
+
     return has_data;
 }
 

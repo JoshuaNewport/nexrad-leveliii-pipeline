@@ -1,4 +1,5 @@
 #include "RdaWriter.h"
+#include "leveliii/ProductDatabase.h"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -8,6 +9,35 @@
 #include <zlib.h>
 
 namespace leveliii {
+
+struct QuantRange {
+    float min;
+    float max;
+};
+
+static QuantRange GetQuantRange(int16_t product_code) {
+    const char* category = GetProductCategory(product_code);
+    
+    if (strcmp(category, "velocity") == 0 || strcmp(category, "super_res_velocity") == 0) {
+        return {-100.0f, 100.0f};
+    } else if (strcmp(category, "spectrum_width") == 0) {
+        return {0.0f, 64.0f};
+    } else if (strcmp(category, "differential_reflectivity") == 0) {
+        return {-8.0f, 8.0f};
+    } else if (strcmp(category, "specific_differential_phase") == 0) {
+        return {0.0f, 360.0f};
+    } else if (strcmp(category, "correlation_coefficient") == 0) {
+        return {0.0f, 1.1f};
+    } else if (strcmp(category, "echo_tops") == 0) {
+        return {0.0f, 230.0f};
+    } else if (strcmp(category, "vil") == 0) {
+        return {0.0f, 75.0f};
+    } else if (strcmp(category, "precipitation") == 0) {
+        return {0.0f, 24.0f};
+    }
+    // Default: reflectivity
+    return {-32.0f, 94.5f};
+}
 
 bool RdaWriter::Write(const std::string& filename, const RadarFrame& frame) {
     if (frame.ray_count == 0 || frame.gate_count == 0 || frame.data.empty()) {
@@ -60,6 +90,8 @@ bool RdaWriter::Write(const std::string& filename, const RadarFrame& frame) {
 }
 
 std::string RdaWriter::CreateMetadataJson(const RadarFrame& frame, uint32_t valid_count) {
+    QuantRange qr = GetQuantRange(frame.product_code);
+    
     std::stringstream ss;
     ss << "{";
     ss << "\"s\":\"" << frame.station_id << "\",";
@@ -71,7 +103,9 @@ std::string RdaWriter::CreateMetadataJson(const RadarFrame& frame, uint32_t vali
     ss << "\"g\":" << frame.gate_count << ",";
     ss << "\"gs\":" << frame.gate_spacing << ",";
     ss << "\"fg\":" << frame.first_gate_dist << ",";
-    ss << "\"v\":" << valid_count;
+    ss << "\"v\":" << valid_count << ",";
+    ss << "\"qmin\":" << qr.min << ",";
+    ss << "\"qmax\":" << qr.max;
     ss << "}";
     return ss.str();
 }
