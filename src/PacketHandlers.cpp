@@ -20,7 +20,47 @@ bool RadialPacketHandler::Parse(std::istream& is, const PacketContext& ctx, Rada
 
     frame.ray_count = ntohs(num_radials);
     frame.gate_count = ntohs(num_bins);
-    frame.gate_spacing = ntohs(range_scale) * 0.001f;
+
+    uint16_t actual_range_scale = ntohs(range_scale);
+    float multiplier = 0.001f;
+
+    switch (ctx.product_code) {
+        case 94:  // DR/N0Q
+        case 99:  // DV/N0U
+        case 153: // SDR
+        case 154: // SDV
+        case 155: // SDW
+        case 159: // DZD
+        case 161: // DCC
+        case 163: // DKD
+        case 165: // DHC
+        case 176: // IPR
+        case 177: // HHC
+            multiplier = 0.00025f;
+            break;
+        case 180: // TDR
+        case 182: // TDV
+            multiplier = 0.00015f;
+            break;
+        case 186: // TZL
+            multiplier = 0.0003f;
+            break;
+        case 20:  // N0R (some versions)
+        case 25:  // N0Z
+        case 28:  // N0S
+            multiplier = 0.00025f;
+            break;
+        case 134: // DVL
+        case 135: // EET
+            multiplier = 1.0f;
+            break;
+        default:
+            multiplier = 0.001f;
+            break;
+    }
+
+    // If range_scale is 1000 and multiplier is 0.00025, result is 0.25km
+    frame.gate_spacing = actual_range_scale * multiplier;
     frame.first_gate_dist = ntohs(first_bin) * 0.001f;
 
     bool has_data = false;
@@ -95,7 +135,47 @@ bool RleRadialPacketHandler::Parse(std::istream& is, const PacketContext& ctx, R
 
     frame.ray_count = ntohs(num_radials);
     frame.gate_count = ntohs(num_bins);
-    frame.gate_spacing = ntohs(range_scale) * 0.001f;
+
+    uint16_t actual_range_scale = ntohs(range_scale);
+    float multiplier = 0.001f;
+
+    switch (ctx.product_code) {
+        case 94:  // DR/N0Q
+        case 99:  // DV/N0U
+        case 153: // SDR
+        case 154: // SDV
+        case 155: // SDW
+        case 159: // DZD
+        case 161: // DCC
+        case 163: // DKD
+        case 165: // DHC
+        case 176: // IPR
+        case 177: // HHC
+            multiplier = 0.00025f;
+            break;
+        case 180: // TDR
+        case 182: // TDV
+            multiplier = 0.00015f;
+            break;
+        case 186: // TZL
+            multiplier = 0.0003f;
+            break;
+        case 20:  // N0R (some versions)
+        case 25:  // N0Z
+        case 28:  // N0S
+            multiplier = 0.00025f;
+            break;
+        case 134: // DVL
+        case 135: // EET
+            multiplier = 1.0f;
+            break;
+        default:
+            multiplier = 0.001f;
+            break;
+    }
+
+    // If range_scale is 1000 and multiplier is 0.00025, result is 0.25km
+    frame.gate_spacing = actual_range_scale * multiplier;
     frame.first_gate_dist = ntohs(first_bin) * 0.001f;
 
     bool has_data = false;
