@@ -32,6 +32,7 @@ private:
     json handle_get_status();
     json handle_get_config();
     json handle_post_config(const std::string& body);
+    json handle_post_storage_path(const std::string& body);
     json handle_post_pause();
     json handle_post_resume();
 };

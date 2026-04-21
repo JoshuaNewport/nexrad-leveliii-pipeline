@@ -118,6 +118,18 @@ void BackgroundFrameFetcher::discovery_loop() {
         
         if (pending_tasks < static_cast<size_t>(threshold)) {
             refresh();
+
+            // Trigger storage cleanup every N cycles
+            if (++cleanup_counter_ >= CLEANUP_INTERVAL) {
+                int max_frames = 100;
+                {
+                    std::lock_guard<std::mutex> lock(config_mutex_);
+                    max_frames = config_.max_frames_per_station;
+                }
+                log_info("Triggering background storage cleanup (max_frames_per_station=" + std::to_string(max_frames) + ")");
+                storage_->cleanup_old_frames(max_frames);
+                cleanup_counter_ = 0;
+            }
         }
 
         for (int i = 0; i < interval * 10 && !should_stop_.load(); ++i) {

@@ -28,16 +28,22 @@ namespace {
 
 FrameStorageManager::FrameStorageManager(const std::string& base_path)
     : base_path_(base_path) {
-    ensure_directory_exists(base_path_);
+    {
+        std::lock_guard<std::mutex> lock(base_path_mutex_);
+        ensure_directory_exists(base_path_);
+    }
 
     size_t usage = 0;
     int count = 0;
-    if (fs::exists(base_path_)) {
-        for (const auto& entry : fs::recursive_directory_iterator(base_path_)) {
-            if (entry.is_regular_file()) {
-                usage += entry.file_size();
-                if (entry.path().extension() == ".RDA") {
-                    count++;
+    {
+        std::lock_guard<std::mutex> lock(base_path_mutex_);
+        if (fs::exists(base_path_)) {
+            for (const auto& entry : fs::recursive_directory_iterator(base_path_)) {
+                if (entry.is_regular_file()) {
+                    usage += entry.file_size();
+                    if (entry.path().extension() == ".RDA") {
+                        count++;
+                    }
                 }
             }
         }
@@ -157,13 +163,19 @@ bool FrameStorageManager::ensure_directory_exists(const std::string& path) const
 std::string FrameStorageManager::get_frame_path(const std::string& station, int16_t product_code, const std::string& product_name, const std::string& timestamp, float elevation) const {
     const char* storage_category = GetProductStorageCategory(product_code);
     std::ostringstream oss;
-    oss << base_path_ << "/" << station << "/" << storage_category << "/" << timestamp << "/" << std::fixed << std::setprecision(1) << elevation << ".RDA";
+    {
+        std::lock_guard<std::mutex> lock(base_path_mutex_);
+        oss << base_path_ << "/" << station << "/" << storage_category << "/" << timestamp << "/" << std::fixed << std::setprecision(1) << elevation << ".RDA";
+    }
     return oss.str();
 }
 
 std::string FrameStorageManager::get_index_path(const std::string& station, const std::string& storage_category) const {
     std::ostringstream oss;
-    oss << base_path_ << "/" << station << "/index_" << storage_category << ".json";
+    {
+        std::lock_guard<std::mutex> lock(base_path_mutex_);
+        oss << base_path_ << "/" << station << "/index_" << storage_category << ".json";
+    }
     return oss.str();
 }
 
@@ -171,7 +183,11 @@ bool FrameStorageManager::save_frame_bitmask(const std::string& station, int16_t
     log_info("save_frame_bitmask: " + station + "/" + product_name + "/" + timestamp + " elev=" + std::to_string(elevation) + " rays=" + std::to_string(num_rays) + " gates=" + std::to_string(num_gates) + " values=" + std::to_string(values.size()));
 
     const char* storage_category = GetProductStorageCategory(product_code);
-    std::string dir = base_path_ + "/" + station + "/" + storage_category + "/" + timestamp;
+    std::string dir;
+    {
+        std::lock_guard<std::mutex> lock(base_path_mutex_);
+        dir = base_path_ + "/" + station + "/" + storage_category + "/" + timestamp;
+    }
     if (!ensure_directory_exists(dir)) {
         log_error("Failed to create directory: " + dir);
         return false;
@@ -233,7 +249,11 @@ bool FrameStorageManager::save_frame_bitmask(const std::string& station, int16_t
 
 bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, int16_t product_code, const std::string& product_name, const std::string& timestamp, const std::vector<float>& elevations, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values, bool auto_update_index) {
     const char* storage_category = GetProductStorageCategory(product_code);
-    std::string dir = base_path_ + "/" + station + "/" + storage_category + "/" + timestamp;
+    std::string dir;
+    {
+        std::lock_guard<std::mutex> lock(base_path_mutex_);
+        dir = base_path_ + "/" + station + "/" + storage_category + "/" + timestamp;
+    }
     if (!ensure_directory_exists(dir)) return false;
 
     json metadata = {
@@ -366,7 +386,11 @@ json FrameStorageManager::get_index(const std::string& station, const std::strin
 std::vector<FrameStorageManager::FrameMetadata> FrameStorageManager::scan_directory(const std::string& station, const std::string& storage_category) const {
     std::vector<FrameMetadata> frames;
 
-    std::string station_path = base_path_ + "/" + station + "/" + storage_category;
+    std::string station_path;
+    {
+        std::lock_guard<std::mutex> lock(base_path_mutex_);
+        station_path = base_path_ + "/" + station + "/" + storage_category;
+    }
     if (!fs::exists(station_path)) return frames;
 
     for (const auto& ts_entry : fs::directory_iterator(station_path)) {
@@ -398,6 +422,107 @@ std::vector<FrameStorageManager::FrameMetadata> FrameStorageManager::scan_direct
     });
 
     return frames;
+}
+
+void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
+    log_info("Running cleanup, max_frames_per_station=" + std::to_string(max_frames_per_station));
+    
+    {
+        std::lock_guard<std::mutex> lock(base_path_mutex_);
+        if (!fs::exists(base_path_)) return;
+    }
+
+    try {
+        std::string current_base_path;
+        {
+            std::lock_guard<std::mutex> lock(base_path_mutex_);
+            current_base_path = base_path_;
+        }
+        
+        for (const auto& station_entry : fs::directory_iterator(current_base_path)) {
+            if (!station_entry.is_directory()) continue;
+            std::string station = station_entry.path().filename().string();
+            
+            for (const auto& cat_entry : fs::directory_iterator(station_entry.path())) {
+                if (!cat_entry.is_directory()) continue;
+                std::string storage_category = cat_entry.path().filename().string();
+                
+                if (storage_category.find("index_") == 0) continue;
+
+                auto frames = scan_directory(station, storage_category);
+                if (frames.empty()) continue;
+
+                std::map<std::string, std::vector<FrameMetadata>> frames_by_timestamp;
+                for (const auto& f : frames) {
+                    frames_by_timestamp[f.timestamp].push_back(f);
+                }
+                
+                if (frames_by_timestamp.size() <= (size_t)max_frames_per_station) continue;
+                
+                std::vector<std::string> sorted_timestamps;
+                for (auto const& [ts, _] : frames_by_timestamp) {
+                    sorted_timestamps.push_back(ts);
+                }
+                
+                size_t num_to_delete = sorted_timestamps.size() - max_frames_per_station;
+                log_info("Cleaning up " + std::to_string(num_to_delete) + " timestamps for " + station + "/" + storage_category);
+
+                for (size_t i = 0; i < num_to_delete; ++i) {
+                    const std::string& ts_to_delete = sorted_timestamps[i];
+                    std::string ts_dir;
+                    {
+                        std::lock_guard<std::mutex> lock(base_path_mutex_);
+                        ts_dir = base_path_ + "/" + station + "/" + storage_category + "/" + ts_to_delete;
+                    }
+                    
+                    size_t deleted_size = 0;
+                    int deleted_count = 0;
+                    
+                    for (const auto& f : frames_by_timestamp[ts_to_delete]) {
+                        if (fs::exists(f.file_path)) {
+                            deleted_size += fs::file_size(f.file_path);
+                            fs::remove(f.file_path);
+                            deleted_count++;
+                        }
+                    }
+                    
+                    std::string vol_path = ts_dir + "/volumetric.RDA";
+                    if (fs::exists(vol_path)) {
+                        deleted_size += fs::file_size(vol_path);
+                        fs::remove(vol_path);
+                        deleted_count++;
+                    }
+                    
+                    if (fs::exists(ts_dir)) {
+                        fs::remove_all(ts_dir);
+                    }
+                    
+                    {
+                        std::lock_guard<std::mutex> lock(stats_mutex_);
+                        total_disk_usage_ -= deleted_size;
+                        total_frame_count_ -= deleted_count;
+                    }
+                }
+                
+                if (num_to_delete > 0) {
+                    update_index(station, storage_category);
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        log_error("Cleanup failed: " + std::string(e.what()));
+    }
+}
+
+std::string FrameStorageManager::get_base_path() const {
+    std::lock_guard<std::mutex> lock(base_path_mutex_);
+    return base_path_;
+}
+
+void FrameStorageManager::set_base_path(const std::string& path) {
+    std::lock_guard<std::mutex> lock(base_path_mutex_);
+    base_path_ = path;
+    ensure_directory_exists(base_path_);
 }
 
 size_t FrameStorageManager::get_total_disk_usage() const {

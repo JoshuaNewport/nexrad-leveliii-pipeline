@@ -96,6 +96,24 @@ target_link_libraries(level3_pipeline PRIVATE
     Threads::Threads
 )
 
+add_executable(test_cleanup src/util/test_cleanup.cpp)
+target_link_libraries(test_cleanup PRIVATE 
+    LevelIIIParser 
+    LevelIII_Admin
+    LevelIII_AWS
+    LevelIII_Util
+    aws-cpp-sdk-s3
+    aws-cpp-sdk-core
+    Threads::Threads
+)
+
+add_executable(test_storage_path src/util/test_storage_path.cpp)
+target_link_libraries(test_storage_path PRIVATE 
+    LevelIII_Util 
+    LevelIIIParser
+    Threads::Threads
+)
+
 if(ENABLE_TESTING)
     enable_testing()
     # add_subdirectory(test/code_tests)

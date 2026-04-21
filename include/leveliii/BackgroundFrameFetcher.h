@@ -100,6 +100,8 @@ private:
     // Stats
     std::atomic<uint64_t> frames_fetched_{0};
     std::atomic<uint64_t> frames_failed_{0};
+    int cleanup_counter_{0};
+    static constexpr int CLEANUP_INTERVAL = 10;
     std::map<std::string, std::string> last_processed_key_; // station_product -> last_key
     std::map<std::string, uint64_t> station_frame_counts_; // station -> frame count
     std::map<std::string, std::chrono::system_clock::time_point> station_last_fetch_time_; // station -> last fetch time

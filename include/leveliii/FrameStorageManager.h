@@ -116,6 +116,9 @@ public:
     
     void cleanup_old_frames(int max_frames_per_station = 30);
     
+    std::string get_base_path() const;
+    void set_base_path(const std::string& path);
+    
     size_t get_total_disk_usage() const;
     int get_frame_count() const;
     size_t num_pending_tasks() const {
@@ -125,6 +128,7 @@ public:
     
 private:
     std::string base_path_;
+    mutable std::mutex base_path_mutex_;
     mutable std::shared_mutex index_mutex_;
     mutable std::unordered_map<std::string, json> index_cache_;
     mutable std::list<std::string> index_lru_list_;

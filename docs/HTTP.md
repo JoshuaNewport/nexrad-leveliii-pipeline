@@ -73,6 +73,15 @@ The `nexrad_pipeline` provides a RESTful Admin API when started with the `--http
 
 ---
 
+### Storage Management
+
+#### `POST /api/storage/path`
+- **Description**: Change the base directory where processed radar frames are stored.
+- **Body**: `{"path": "/path/to/new/storage"}`
+- **Response**: `{"success": true, "path": "/path/to/new/storage"}`
+
+---
+
 ### Process Control
 
 #### `POST /api/pause`

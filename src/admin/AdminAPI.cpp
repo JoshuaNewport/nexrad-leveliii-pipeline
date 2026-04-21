@@ -44,6 +44,10 @@ void AdminAPI::register_routes(WebServer& server) {
         return handle_post_config(body).dump();
     });
 
+    server.add_route("POST", "/api/storage/path", [this](const std::string& body, const std::string&) {
+        return handle_post_storage_path(body).dump();
+    });
+
     server.add_route("POST", "/api/pause", [this](const std::string&, const std::string&) {
         return handle_post_pause().dump();
     });
@@ -234,6 +238,27 @@ json AdminAPI::handle_post_resume() {
     }
     fetcher_->start();
     return json{{"success", true}, {"status", "resumed"}};
+}
+
+json AdminAPI::handle_post_storage_path(const std::string& body) {
+    if (!storage_) return json{{"error", "Storage manager not initialized"}};
+    
+    try {
+        auto data = json::parse(body);
+        std::string new_path = data.value("path", "");
+        
+        if (new_path.empty()) {
+            return json{{"error", "Path is required"}};
+        }
+        
+        storage_->set_base_path(new_path);
+        return json{
+            {"success", true},
+            {"path", storage_->get_base_path()}
+        };
+    } catch (const std::exception& e) {
+        return json{{"error", e.what()}};
+    }
 }
 
 } // namespace leveliii
