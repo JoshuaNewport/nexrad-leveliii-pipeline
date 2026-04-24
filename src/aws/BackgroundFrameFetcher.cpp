@@ -374,6 +374,10 @@ void BackgroundFrameFetcher::fetch_and_process(const DiscoveryItem& item) {
         ScopedBuffer raw_data(buffer_pool_);
         if (!raw_data.valid()) {
             frames_failed_.fetch_add(1);
+            {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                station_failed_counts_[item.station]++;
+            }
             return;
         }
         raw_data->clear();
@@ -395,6 +399,10 @@ void BackgroundFrameFetcher::fetch_and_process(const DiscoveryItem& item) {
         
         if (raw_data->empty()) {
             frames_failed_.fetch_add(1);
+            {
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                station_failed_counts_[item.station]++;
+            }
             return;
         }
         
@@ -417,6 +425,7 @@ void BackgroundFrameFetcher::fetch_and_process(const DiscoveryItem& item) {
                 if (last_processed_key_[station_product] < item.key) {
                     last_processed_key_[station_product] = item.key;
                 }
+                station_failed_counts_[item.station]++;
                 return;
             }
 
@@ -433,14 +442,14 @@ void BackgroundFrameFetcher::fetch_and_process(const DiscoveryItem& item) {
                 if (last_processed_key_[station_product] < item.key) {
                     last_processed_key_[station_product] = item.key;
                 }
+                station_failed_counts_[item.station]++;
                 return;
             }
 
             // Adapt to FrameStorageManager's expectations
             AsyncWriteTask task;
             task.type = AsyncWriteTask::BITMASK;
-            task.station = frame.station_id;
-            if (task.station.empty()) task.station = item.station;
+            task.station = item.station; // Always use requested station ID to avoid mismatches (e.g. KTLX vs KOUN)
             
             task.product_code = frame.product_code;
             task.product_name = item.product;
@@ -491,10 +500,15 @@ void BackgroundFrameFetcher::fetch_and_process(const DiscoveryItem& item) {
             if (last_processed_key_[station_product] < item.key) {
                 last_processed_key_[station_product] = item.key;
             }
+            station_failed_counts_[item.station]++;
         }
     } else {
         log_error("Failed to fetch " + item.key + ": " + get_outcome.GetError().GetMessage());
         frames_failed_.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lock(stats_mutex_);
+            station_failed_counts_[item.station]++;
+        }
     }
 }
 
@@ -598,6 +612,9 @@ json BackgroundFrameFetcher::get_statistics() const {
             
             auto count_it = station_frame_counts_.find(station);
             s_stat["frames_fetched"] = (count_it != station_frame_counts_.end()) ? count_it->second : 0UL;
+            
+            auto failed_it = station_failed_counts_.find(station);
+            s_stat["frames_failed"] = (failed_it != station_failed_counts_.end()) ? failed_it->second : 0UL;
             
             s_stat["last_frame_timestamp"] = "N/A";
             

@@ -104,6 +104,7 @@ private:
     static constexpr int CLEANUP_INTERVAL = 10;
     std::map<std::string, std::string> last_processed_key_; // station_product -> last_key
     std::map<std::string, uint64_t> station_frame_counts_; // station -> frame count
+    std::map<std::string, uint64_t> station_failed_counts_; // station -> failure count
     std::map<std::string, std::chrono::system_clock::time_point> station_last_fetch_time_; // station -> last fetch time
     mutable std::mutex stats_mutex_;
 

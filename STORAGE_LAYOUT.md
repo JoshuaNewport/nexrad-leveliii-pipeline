@@ -18,7 +18,7 @@ BASE_PATH/
 
 ```
 /data/leveliii/
-├── KOUN/
+├── KTLX/
 │   ├── reflectivity/
 │   │   └── 20260417_200334/
 │   │       ├── 0.5.RDA
@@ -111,8 +111,8 @@ To add a new product to the system:
 
 3. **Example: Adding N0B product to super_res_reflectivity**:
    ```cpp
-   add_product(153, "SDR", "Super-Resolution Reflectivity", 
-               {"N0B", "N1B", "N2B", "N3B"}, 
+   add_product(153, "SDR", "Super-Resolution Reflectivity",
+               {"N0B", "N1B", "N2B", "N3B"},
                "super_res",                    // category (display)
                "super_res_reflectivity",       // storage_category (filesystem)
                true, {16, 0xAF1F});
