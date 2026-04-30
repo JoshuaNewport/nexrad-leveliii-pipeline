@@ -21,7 +21,7 @@ SCRIPT_DIR = Path(__file__).parent.absolute()
 DATA_DIR = SCRIPT_DIR / "weather_nomad"
 
 ACURITE_DB_PATH = DATA_DIR / "acurite_data.db"
-INDEX_DB_PATH = DATA_DIR / "radar" / "index.db"
+INDEX_DB_PATH = SCRIPT_DIR / "radar" / "index.db"
 
 DB_TIMEOUT = 5.0
 MAX_DB_RETRIES = 3
