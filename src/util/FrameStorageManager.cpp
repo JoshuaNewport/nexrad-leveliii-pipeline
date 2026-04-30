@@ -1,5 +1,6 @@
 #include "leveliii/FrameStorageManager.h"
 #include "leveliii/ZlibUtils.h"
+#include "leveliii/ProductDatabase.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -33,6 +34,37 @@ FrameStorageManager::FrameStorageManager(const std::string& base_path)
         ensure_directory_exists(base_path_);
     }
 
+    // Initialize SQLite database
+    std::string db_path = base_path_ + "/index.db";
+    if (sqlite3_open(db_path.c_str(), &db_) != SQLITE_OK) {
+        log_error("Failed to open database: " + std::string(sqlite3_errmsg(db_)));
+    } else {
+        // Enable WAL mode for better concurrency
+        sqlite3_exec(db_, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
+        
+        // Create frames table
+        const char* create_table_sql = 
+            "CREATE TABLE IF NOT EXISTS frames ("
+            "station TEXT, "
+            "product_code INTEGER, "
+            "product_name TEXT, "
+            "timestamp TEXT, "
+            "elevation REAL, "
+            "metadata TEXT, "
+            "PRIMARY KEY (station, product_name, timestamp, elevation)"
+            ");";
+        
+        char* err_msg = nullptr;
+        if (sqlite3_exec(db_, create_table_sql, nullptr, nullptr, &err_msg) != SQLITE_OK) {
+            log_error("SQL error: " + std::string(err_msg));
+            sqlite3_free(err_msg);
+        }
+        
+        // Create indexes for faster querying
+        sqlite3_exec(db_, "CREATE INDEX IF NOT EXISTS idx_station_product ON frames(station, product_name);", nullptr, nullptr, nullptr);
+        sqlite3_exec(db_, "CREATE INDEX IF NOT EXISTS idx_timestamp ON frames(timestamp);", nullptr, nullptr, nullptr);
+    }
+
     size_t usage = 0;
     int count = 0;
     {
@@ -59,6 +91,10 @@ FrameStorageManager::FrameStorageManager(const std::string& base_path)
 
 FrameStorageManager::~FrameStorageManager() {
     shutdown_async_storage();
+    if (db_) {
+        sqlite3_close(db_);
+        db_ = nullptr;
+    }
 }
 
 void FrameStorageManager::enqueue_async_write(AsyncWriteTask&& task) {
@@ -170,15 +206,6 @@ std::string FrameStorageManager::get_frame_path(const std::string& station, int1
     return oss.str();
 }
 
-std::string FrameStorageManager::get_index_path(const std::string& station, const std::string& storage_category) const {
-    std::ostringstream oss;
-    {
-        std::lock_guard<std::mutex> lock(base_path_mutex_);
-        oss << base_path_ << "/" << station << "/index_" << storage_category << ".json";
-    }
-    return oss.str();
-}
-
 bool FrameStorageManager::save_frame_bitmask(const std::string& station, int16_t product_code, const std::string& product_name, const std::string& timestamp, float elevation, uint16_t num_rays, uint16_t num_gates, float gate_spacing, float first_gate, const std::vector<uint8_t>& bitmask, const std::vector<uint8_t>& values, bool auto_update_index) {
     log_info("save_frame_bitmask: " + station + "/" + product_name + "/" + timestamp + " elev=" + std::to_string(elevation) + " rays=" + std::to_string(num_rays) + " gates=" + std::to_string(num_gates) + " values=" + std::to_string(values.size()));
 
@@ -239,10 +266,33 @@ bool FrameStorageManager::save_frame_bitmask(const std::string& station, int16_t
         total_disk_usage_ += (compressed.size() - old_size);
     }
 
-    if (auto_update_index) {
-        const char* storage_category = GetProductStorageCategory(product_code);
-        update_index(station, storage_category);
+    if (db_) {
+        const char* sql = "INSERT OR REPLACE INTO frames (station, product_code, product_name, timestamp, elevation, metadata) VALUES (?, ?, ?, ?, ?, ?);";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, station.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 2, product_code);
+            sqlite3_bind_text(stmt, 3, storage_category, -1, SQLITE_TRANSIENT); // Use storage_category as product_name
+            sqlite3_bind_text(stmt, 4, timestamp.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 5, elevation);
+            sqlite3_bind_text(stmt, 6, metadata_str.c_str(), -1, SQLITE_TRANSIENT);
+
+            int rc;
+            int retries = 0;
+            while ((rc = sqlite3_step(stmt)) == SQLITE_BUSY && retries < 10) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                retries++;
+            }
+
+            if (rc != SQLITE_DONE) {
+                log_error("Failed to insert frame into database: " + std::string(sqlite3_errmsg(db_)));
+            }
+            sqlite3_finalize(stmt);
+        } else {
+            log_error("Failed to prepare statement: " + std::string(sqlite3_errmsg(db_)));
+        }
     }
+
     log_info("Successfully saved: " + file_path);
     return true;
 }
@@ -293,94 +343,78 @@ bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, in
         total_disk_usage_ += (compressed.size() - old_size);
     }
 
-    if (auto_update_index) {
-        const char* storage_category = GetProductStorageCategory(product_code);
-        update_index(station, storage_category);
+    if (db_) {
+        const char* sql = "INSERT OR REPLACE INTO frames (station, product_code, product_name, timestamp, elevation, metadata) VALUES (?, ?, ?, ?, ?, ?);";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            sqlite3_bind_text(stmt, 1, station.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(stmt, 2, product_code);
+            sqlite3_bind_text(stmt, 3, storage_category, -1, SQLITE_TRANSIENT); // Use storage_category as product_name
+            sqlite3_bind_text(stmt, 4, timestamp.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_double(stmt, 5, -1.0); // Use -1.0 for volumetric
+            sqlite3_bind_text(stmt, 6, metadata_str.c_str(), -1, SQLITE_TRANSIENT);
+
+            int rc;
+            int retries = 0;
+            while ((rc = sqlite3_step(stmt)) == SQLITE_BUSY && retries < 10) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                retries++;
+            }
+
+            if (rc != SQLITE_DONE) {
+                log_error("Failed to insert volumetric frame into database: " + std::string(sqlite3_errmsg(db_)));
+            }
+            sqlite3_finalize(stmt);
+        }
     }
+
     return true;
 }
 
-void FrameStorageManager::update_index(const std::string& station, const std::string& storage_category) {
-    try {
-        std::unique_lock<std::shared_mutex> lock(index_mutex_);
-        auto frames = scan_directory(station, storage_category);
+json FrameStorageManager::get_index(const std::string& station, const std::string& storage_category) const {
+    if (!db_) return json::object();
 
-        json index = {
-            {"s", station}, {"c", storage_category},
-            {"u", std::chrono::system_clock::now().time_since_epoch().count()},
-            {"c", frames.size()}, {"f", json::array()}
-        };
+    json index = {
+        {"s", station}, {"c", storage_category},
+        {"u", std::chrono::system_clock::now().time_since_epoch().count()},
+        {"f", json::array()}
+    };
 
-        for (const auto& frame : frames) {
-            index["f"].push_back({{"t", frame.timestamp}, {"e", frame.elevation}});
+    const char* sql = "SELECT timestamp, elevation FROM frames WHERE station = ? AND product_name = ? ORDER BY timestamp ASC, elevation ASC;";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, station.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, storage_category.c_str(), -1, SQLITE_TRANSIENT);
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            std::string ts = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            double elev = sqlite3_column_double(stmt, 1);
+            index["f"].push_back({{"t", ts}, {"e", elev}});
         }
-
-        std::string json_str = index.dump();
-        auto compressed = ZlibUtils::gzip_compress(reinterpret_cast<const uint8_t*>(json_str.c_str()), json_str.size());
-
-        std::string index_path = get_index_path(station, storage_category);
-        ensure_directory_exists(fs::path(index_path).parent_path().string());
-
-        std::ofstream file(index_path, std::ios::binary);
-        if (file.is_open()) {
-            file.write(reinterpret_cast<const char*>(compressed.data()), compressed.size());
-            file.close();
-        }
-
-        std::string key = station + "/" + storage_category;
-        index_cache_[key] = index;
-
-        if (index_lru_map_.count(key)) {
-            index_lru_list_.erase(index_lru_map_[key]);
-        }
-        index_lru_list_.push_front(key);
-        index_lru_map_[key] = index_lru_list_.begin();
-
-        if (index_cache_.size() > MAX_INDEX_CACHE_SIZE) {
-            std::string oldest_key = index_lru_list_.back();
-            index_cache_.erase(oldest_key);
-            index_lru_map_.erase(oldest_key);
-            index_lru_list_.pop_back();
-        }
-    } catch (...) {}
+        sqlite3_finalize(stmt);
+    }
+    
+    index["count"] = index["f"].size();
+    return index;
 }
 
-json FrameStorageManager::get_index(const std::string& station, const std::string& storage_category) const {
-    std::unique_lock<std::shared_mutex> lock(index_mutex_);
-    std::string key = station + "/" + storage_category;
-    if (index_cache_.count(key)) {
-        index_lru_list_.erase(index_lru_map_.at(key));
-        index_lru_list_.push_front(key);
-        index_lru_map_[key] = index_lru_list_.begin();
-        return index_cache_.at(key);
+bool FrameStorageManager::has_timestamp_product(const std::string& station, const std::string& product_name, const std::string& timestamp) const {
+    if (!db_) return false;
+
+    const char* sql = "SELECT 1 FROM frames WHERE station = ? AND product_name = ? AND timestamp = ? LIMIT 1;";
+    sqlite3_stmt* stmt;
+    bool exists = false;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, station.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, product_name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, timestamp.c_str(), -1, SQLITE_TRANSIENT);
+
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            exists = true;
+        }
+        sqlite3_finalize(stmt);
     }
-
-    std::string index_path = get_index_path(station, storage_category);
-    if (!fs::exists(index_path)) return json::object();
-
-    std::ifstream file(index_path, std::ios::binary);
-    if (!file) return json::object();
-
-    file.seekg(0, std::ios::end);
-    size_t size = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    std::vector<uint8_t> compressed(size);
-    file.read(reinterpret_cast<char*>(compressed.data()), size);
-    file.close();
-
-    auto decompressed = ZlibUtils::gzip_decompress(compressed.data(), compressed.size());
-    try {
-        std::string json_str(decompressed.begin(), decompressed.end());
-        json index = json::parse(json_str);
-
-        index_cache_[key] = index;
-        index_lru_list_.push_front(key);
-        index_lru_map_[key] = index_lru_list_.begin();
-        return index;
-    } catch (...) {
-        return json::object();
-    }
+    return exists;
 }
 
 std::vector<FrameStorageManager::FrameMetadata> FrameStorageManager::scan_directory(const std::string& station, const std::string& storage_category) const {
@@ -497,15 +531,29 @@ void FrameStorageManager::cleanup_old_frames(int max_frames_per_station) {
                         fs::remove_all(ts_dir);
                     }
                     
+                    if (db_) {
+                        const char* sql = "DELETE FROM frames WHERE station = ? AND product_name = ? AND timestamp = ?;";
+                        sqlite3_stmt* stmt;
+                        if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+                            sqlite3_bind_text(stmt, 1, station.c_str(), -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_text(stmt, 2, storage_category.c_str(), -1, SQLITE_TRANSIENT);
+                            sqlite3_bind_text(stmt, 3, ts_to_delete.c_str(), -1, SQLITE_TRANSIENT);
+                            
+                            int rc;
+                            int retries = 0;
+                            while ((rc = sqlite3_step(stmt)) == SQLITE_BUSY && retries < 10) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                                retries++;
+                            }
+                            sqlite3_finalize(stmt);
+                        }
+                    }
+
                     {
                         std::lock_guard<std::mutex> lock(stats_mutex_);
                         total_disk_usage_ -= deleted_size;
                         total_frame_count_ -= deleted_count;
                     }
-                }
-                
-                if (num_to_delete > 0) {
-                    update_index(station, storage_category);
                 }
             }
         }

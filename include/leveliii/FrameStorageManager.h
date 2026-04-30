@@ -1,25 +1,22 @@
 #pragma once
 
 #include <string>
-#include <unordered_map>
 #include <vector>
 #include <nlohmann/json.hpp>
 #include <filesystem>
 #include <chrono>
 #include <shared_mutex>
 #include <queue>
-#include <list>
 #include <thread>
 #include <atomic>
 #include <condition_variable>
+#include <sqlite3.h>
 #include "LevelIII_Types.h"
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 
 namespace leveliii {
-
-constexpr size_t MAX_INDEX_CACHE_SIZE = 64;
 
 struct AsyncWriteTask {
     enum Type {
@@ -105,7 +102,6 @@ public:
         CompressedFrameData& out_data
     ) const;
 
-    void update_index(const std::string& station, const std::string& storage_category);
     json get_index(const std::string& station, const std::string& storage_category) const;
     
     bool has_timestamp_product(
@@ -128,12 +124,8 @@ public:
     
 private:
     std::string base_path_;
+    sqlite3* db_ = nullptr;
     mutable std::mutex base_path_mutex_;
-    mutable std::shared_mutex index_mutex_;
-    mutable std::unordered_map<std::string, json> index_cache_;
-    mutable std::list<std::string> index_lru_list_;
-    mutable std::unordered_map<std::string, std::list<std::string>::iterator> index_lru_map_;
-
     mutable std::mutex stats_mutex_;
     std::atomic<size_t> total_disk_usage_{0};
     std::atomic<int> total_frame_count_{0};
@@ -158,11 +150,6 @@ private:
         const std::string& product_name,
         const std::string& timestamp,
         float elevation
-    ) const;
-    
-    std::string get_index_path(
-        const std::string& station,
-        const std::string& storage_category
     ) const;
     
     std::vector<FrameMetadata> scan_directory(

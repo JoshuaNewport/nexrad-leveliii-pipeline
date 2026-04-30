@@ -13,6 +13,7 @@ find_package(BZip2 REQUIRED)
 find_package(Threads REQUIRED)
 find_package(CURL REQUIRED)
 find_package(AWSSDK REQUIRED COMPONENTS s3 core)
+find_package(SQLite3 REQUIRED)
 
 # ============================================================================
 # Level III Libraries
@@ -28,7 +29,7 @@ add_library(LevelIII_Util STATIC
 target_include_directories(LevelIII_Util PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
-target_link_libraries(LevelIII_Util PRIVATE ZLIB::ZLIB)
+target_link_libraries(LevelIII_Util PRIVATE ZLIB::ZLIB SQLite::SQLite3)
 
 # AWS
 add_library(LevelIII_AWS STATIC
