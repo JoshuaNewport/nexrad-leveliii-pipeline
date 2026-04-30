@@ -49,9 +49,8 @@ FrameStorageManager::FrameStorageManager(const std::string& base_path)
             "product_code INTEGER, "
             "product_name TEXT, "
             "timestamp TEXT, "
-            "elevation REAL, "
-            "metadata TEXT, "
-            "PRIMARY KEY (station, product_name, timestamp, elevation)"
+            "filename TEXT, "
+            "PRIMARY KEY (station, product_name, timestamp, filename)"
             ");";
         
         char* err_msg = nullptr;
@@ -267,15 +266,15 @@ bool FrameStorageManager::save_frame_bitmask(const std::string& station, int16_t
     }
 
     if (db_) {
-        const char* sql = "INSERT OR REPLACE INTO frames (station, product_code, product_name, timestamp, elevation, metadata) VALUES (?, ?, ?, ?, ?, ?);";
+        const char* sql = "INSERT OR REPLACE INTO frames (station, product_code, product_name, timestamp, filename) VALUES (?, ?, ?, ?, ?);";
         sqlite3_stmt* stmt;
         if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            std::string filename = fs::path(file_path).filename().string();
             sqlite3_bind_text(stmt, 1, station.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(stmt, 2, product_code);
             sqlite3_bind_text(stmt, 3, storage_category, -1, SQLITE_TRANSIENT); // Use storage_category as product_name
             sqlite3_bind_text(stmt, 4, timestamp.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_double(stmt, 5, elevation);
-            sqlite3_bind_text(stmt, 6, metadata_str.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 5, filename.c_str(), -1, SQLITE_TRANSIENT);
 
             int rc;
             int retries = 0;
@@ -344,15 +343,15 @@ bool FrameStorageManager::save_volumetric_bitmask(const std::string& station, in
     }
 
     if (db_) {
-        const char* sql = "INSERT OR REPLACE INTO frames (station, product_code, product_name, timestamp, elevation, metadata) VALUES (?, ?, ?, ?, ?, ?);";
+        const char* sql = "INSERT OR REPLACE INTO frames (station, product_code, product_name, timestamp, filename) VALUES (?, ?, ?, ?, ?);";
         sqlite3_stmt* stmt;
         if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            std::string filename = fs::path(file_path).filename().string();
             sqlite3_bind_text(stmt, 1, station.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(stmt, 2, product_code);
             sqlite3_bind_text(stmt, 3, storage_category, -1, SQLITE_TRANSIENT); // Use storage_category as product_name
             sqlite3_bind_text(stmt, 4, timestamp.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_double(stmt, 5, -1.0); // Use -1.0 for volumetric
-            sqlite3_bind_text(stmt, 6, metadata_str.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(stmt, 5, filename.c_str(), -1, SQLITE_TRANSIENT);
 
             int rc;
             int retries = 0;
@@ -380,7 +379,7 @@ json FrameStorageManager::get_index(const std::string& station, const std::strin
         {"f", json::array()}
     };
 
-    const char* sql = "SELECT timestamp, elevation FROM frames WHERE station = ? AND product_name = ? ORDER BY timestamp ASC, elevation ASC;";
+    const char* sql = "SELECT timestamp, filename FROM frames WHERE station = ? AND product_name = ? ORDER BY timestamp ASC, filename ASC;";
     sqlite3_stmt* stmt;
     if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) == SQLITE_OK) {
         sqlite3_bind_text(stmt, 1, station.c_str(), -1, SQLITE_TRANSIENT);
@@ -388,8 +387,8 @@ json FrameStorageManager::get_index(const std::string& station, const std::strin
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
             std::string ts = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
-            double elev = sqlite3_column_double(stmt, 1);
-            index["f"].push_back({{"t", ts}, {"e", elev}});
+            std::string fname = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            index["f"].push_back({{"t", ts}, {"f", fname}});
         }
         sqlite3_finalize(stmt);
     }

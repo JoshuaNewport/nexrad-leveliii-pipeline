@@ -1,256 +1,71 @@
-#!/usr/bin/env python3
-"""
-Refactored Radar Data Server
-- Static file server for radar assets
-- Acurite weather API (/api/acurite)
-- Radar index DB API (/api/index)
-"""
+# Index Database Query Guide
 
-import http.server
-import json
-import os
-import sqlite3
-import time
-import logging
-from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+The system uses a SQLite database named `index.db` located in the base storage directory (default `./data/leveliii/index.db`) to manage metadata for all stored radar frames. This replaces the previous multi-JSON file approach, providing better concurrency and faster querying.
 
-# -------------------- Config --------------------
-PORT = 5001
-SCRIPT_DIR = Path(__file__).parent.absolute()
-DATA_DIR = SCRIPT_DIR / "weather_nomad"
+## Database Schema
 
-ACURITE_DB_PATH = DATA_DIR / "acurite_data.db"
-INDEX_DB_PATH = DATA_DIR / "radar" / "index.db"
+The database contains a single table named `frames` with the following schema:
 
-DB_TIMEOUT = 5.0
-MAX_DB_RETRIES = 3
-MAX_INDEX_LIMIT = 90
+```sql
+CREATE TABLE frames (
+    station TEXT,             -- 4-letter radar station ID (e.g., KTLX)
+    product_code INTEGER,     -- Level III product code
+    product_name TEXT,        -- Descriptive name/category (e.g., reflectivity, velocity)
+    timestamp TEXT,           -- ISO-8601 formatted timestamp (e.g., 2024-05-20T12:30:00Z)
+    filename TEXT,            -- Name of the data file on disk (e.g., 0.5.RDA, volumetric.RDA)
+    PRIMARY KEY (station, product_name, timestamp, filename)
+);
+```
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+## Indexes
 
-# -------------------- DB Helper --------------------
+To ensure high performance, the following indexes are maintained:
 
-def open_db_with_retry(db_path, max_retries=MAX_DB_RETRIES):
-    for attempt in range(max_retries):
-        try:
-            if not db_path.exists():
-                logging.warning(f"Database not found: {db_path}")
-                return None
+- `idx_station_product`: Optimized for lookups by station and product name.
+- `idx_timestamp`: Optimized for temporal queries.
 
-            conn = sqlite3.connect(str(db_path), timeout=DB_TIMEOUT)
-            conn.row_factory = sqlite3.Row
-            return conn
+## Common Queries
 
-        except sqlite3.OperationalError as e:
-            logging.error(f"DB connection attempt {attempt+1} failed: {e}")
-            time.sleep(0.5)
+### List all products for a station
 
-    return None
+```sql
+SELECT DISTINCT product_name FROM frames WHERE station = 'KTLX';
+```
 
-# -------------------- Validation --------------------
+### Get latest 10 frames for a specific product
 
-def validate_acurite_record(row):
-    try:
-        return {
-            'id': row['id'],
-            'timestamp': row['timestamp'],
-            'model': row['model'] or 'Unknown',
-            'brand': row['brand'] or 'Acurite',
-            'temperature': float(row['temperature'] or 0.0),
-            'humidity': float(row['humidity'] or 0.0),
-            'battery_ok': int(row['battery_ok'] or 1),
-            'signal_strength': int(row['signal_strength'] or 0),
-            'wind_speed_kph': float(row['wind_speed_kph'] or 0.0),
-            'wind_dir_deg': float(row['wind_dir_deg'] or 0.0),
-            'rain_in': float(row['rain_in'] or 0.0)
-        }
-    except Exception as e:
-        logging.error(f"Validation error: {e}")
-        return None
+```sql
+SELECT timestamp, filename
+FROM frames 
+WHERE station = 'KTLX' AND product_name = 'reflectivity' 
+ORDER BY timestamp DESC 
+LIMIT 10;
+```
 
-# -------------------- Server --------------------
+### Find frames within a time range
 
-class RadarDataServer(http.server.SimpleHTTPRequestHandler):
+```sql
+SELECT station, product_name, timestamp, filename
+FROM frames 
+WHERE timestamp BETWEEN '2024-05-20T12:00:00Z' AND '2024-05-20T13:00:00Z'
+ORDER BY timestamp ASC;
+```
 
-    # ---------- Path Handling ----------
-    def translate_path(self, path):
-        if path.startswith('/'):
-            path = path[1:]
-        return str(DATA_DIR / path)
+### Get all tilts for a specific volume scan
 
-    def end_headers(self):
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        super().end_headers()
+```sql
+SELECT filename
+FROM frames 
+WHERE station = 'KTLX' AND product_name = 'reflectivity' AND timestamp = '2024-05-20T12:30:00Z'
+ORDER BY filename ASC;
+```
 
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self.end_headers()
+## Accessing the Database
 
-    # ---------- Router ----------
-    def do_GET(self):
-        try:
-            parsed = urlparse(self.path)
+You can inspect the database using the SQLite command-line tool:
 
-            if parsed.path == '/api/acurite':
-                return self.handle_acurite()
+```bash
+sqlite3 ./data/leveliii/index.db
+```
 
-            if parsed.path == '/api/index':
-                return self.handle_index(parsed)
-
-            # fallback static server
-            return super().do_GET()
-
-        except Exception as e:
-            logging.error(f"GET error: {e}")
-            self.send_error(500, "Internal server error")
-
-    # ---------- Acurite API ----------
-    def handle_acurite(self):
-        conn = None
-        try:
-            conn = open_db_with_retry(ACURITE_DB_PATH)
-            if not conn:
-                return self._empty_weather()
-
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM acurite_data
-                ORDER BY timestamp DESC
-                LIMIT 1
-            """)
-
-            row = cursor.fetchone()
-            if not row:
-                return self._empty_weather()
-
-            data = validate_acurite_record(row)
-            if not data:
-                return self._empty_weather()
-
-            resp = {
-                "location": data['model'],
-                "current": {
-                    "temperature": data['temperature'],
-                    "humidity": data['humidity'],
-                    "windSpeed": data['wind_speed_kph'],
-                    "windDirection": data['wind_dir_deg'],
-                    "rainfall": data['rain_in'],
-                    "battery": data['battery_ok'],
-                    "signalStrength": data['signal_strength']
-                },
-                "metadata": {
-                    "timestamp": data['timestamp'],
-                    "model": data['model'],
-                    "brand": data['brand']
-                }
-            }
-
-            self._send_json(resp)
-
-        finally:
-            if conn:
-                conn.close()
-
-    # ---------- Index API ----------
-    def handle_index(self, parsed):
-        conn = None
-        try:
-            qs = parse_qs(parsed.query)
-
-            station = qs.get('station', [None])[0]
-            product = qs.get('product', [None])[0]
-
-            limit = int(qs.get('limit', [MAX_INDEX_LIMIT])[0])
-            limit = max(1, min(limit, MAX_INDEX_LIMIT))
-
-            conn = open_db_with_retry(INDEX_DB_PATH)
-            if not conn:
-                return self.send_error(404, "Index DB not found")
-
-            cursor = conn.cursor()
-
-            query = """
-                SELECT station, product_code, product_name, timestamp, elevation, metadata
-                FROM frames
-                WHERE 1=1
-            """
-            params = []
-
-            if station:
-                query += " AND station = ?"
-                params.append(station)
-
-            if product:
-                query += " AND product_name = ?"
-                params.append(product)
-
-            query += " ORDER BY timestamp DESC LIMIT ?"
-            params.append(limit)
-
-            cursor.execute(query, params)
-
-            frames = []
-            for r in cursor.fetchall():
-                frames.append({
-                    "station": r["station"],
-                    "product_code": r["product_code"],
-                    "product_name": r["product_name"],
-                    "timestamp": r["timestamp"],
-                    "elevation": r["elevation"],
-                    "metadata": json.loads(r["metadata"]) if r["metadata"] else None
-                })
-
-            self._send_json({
-                "count": len(frames),
-                "limit": limit,
-                "frames": frames
-            })
-
-        finally:
-            if conn:
-                conn.close()
-
-    # ---------- Helpers ----------
-    def _send_json(self, data):
-        body = json.dumps(data).encode('utf-8')
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _empty_weather(self):
-        self._send_json({
-            "location": "Unknown",
-            "current": {"temperature": 0, "humidity": 0}
-        })
-
-    def log_message(self, fmt, *args):
-        logging.info(f"[{self.client_address[0]}] {fmt % args}")
-
-# -------------------- Main --------------------
-
-def main():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-    server = http.server.ThreadingHTTPServer(
-        ('0.0.0.0', PORT),
-        RadarDataServer
-    )
-
-    logging.info(f"Radar server running on :{PORT}")
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        server.shutdown()
-
-
-if __name__ == '__main__':
-    main()
+Inside the SQLite prompt, you can run `.schema` to see the table structure or `.tables` to list tables.
